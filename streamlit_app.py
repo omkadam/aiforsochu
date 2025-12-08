@@ -1,33 +1,58 @@
 import streamlit as st
 import openai
-from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_community.llms import ollama
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, AIMessage
+
 import os
 from dotenv import load_dotenv
-
 load_dotenv()
 
 ## Langsmith tracking
 os.environ['LANGCHAIN_API_KEY'] = os.getenv("LANGCHAIN_API_KEY")
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_PROJECT"] = "Q&A Chatbot With OpenAI"
+os.environ["LANGCHAIN_PROJECT"] = "SochuTV SEL Scoring"
 groq_api_key = os.environ["GROQ_API_KEY"]
 
-## Define our prompt template with conversation history
+# -------------------------------------------------------
+# 1️⃣ UPDATED PROMPT (for SEL scoring)
+# -------------------------------------------------------
+
 prompt = ChatPromptTemplate.from_messages(
     [
-        ("system", "You are a psychologist who knows everything about child psychology and human psychology. Act as a facilitator and help users to learn social emotional learning. Don't make biased decisions and help user to learn social emotional learning through experiences. If you want then give them some tasks which they can perform at their home or with their friends and can learn social emotional learning."),
-        ("placeholder", "{chat_history}"),
+        (
+            "system",
+            """
+You are an SEL Scoring Engine based on the Indian Social Emotional Learning Framework (ISELF).
+Your job:
+
+1. Ask the user exactly **5 SEL questions**, one at a time.
+2. Collect the user's answers.
+3. After receiving all 5 answers, generate SEL scores:
+    - Self-Awareness (0–20)
+    - Self-Management (0–20)
+    - Social Awareness (0–20)
+    - Relationship Skills (0–20)
+    - Responsible Decision Making (0–20)
+4. ALSO generate:
+    - totalSELScore = sum of all 5
+    - A short feedback summary
+
+Rules:
+- Don't give any analysis until all 5 answers are collected.
+- ALWAYS output in a friendly, non-judgmental way.
+- After all answers, output results in clean text (no JSON needed for now).
+""",
+        ),
         ("user", "{question}")
     ]
 )
 
-## Function to generate response with conversation history
-def generate_response_with_history(question, chat_history, temperature, max_tokens):
+# -------------------------------------------------------
+# LLM FUNCTION
+# -------------------------------------------------------
+
+def generate_response_new(question, temperature, max_tokens):
     llm = ChatGroq(
         groq_api_key=groq_api_key,
         model="llama-3.1-8b-instant",
@@ -36,88 +61,84 @@ def generate_response_with_history(question, chat_history, temperature, max_toke
     )
     output_parser = StrOutputParser()
     chain = prompt | llm | output_parser
-    
-    # Convert chat history to the format expected by the prompt
-    formatted_history = []
-    for msg in chat_history:
-        if msg["role"] == "user":
-            formatted_history.append(HumanMessage(content=msg["content"]))
-        else:
-            formatted_history.append(AIMessage(content=msg["content"]))
-    
-    answer = chain.invoke({
-        'question': question,
-        'chat_history': formatted_history
-    })
+    answer = chain.invoke({'question': question})
     return answer
 
-## Initialize session state for chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# -------------------------------------------------------
+# STREAMLIT UI
+# -------------------------------------------------------
 
-## Page configuration
-st.set_page_config(page_title="Sochu.AI", page_icon="🧠", layout="wide")
+st.title("Sochu SEL Test – Beta 1.0")
+st.caption("🧠 Answer 5 questions to calculate your SEL Score")
 
-## Title of the app
-st.title("Sochu.ai using Groq + LLaMA3")
-st.caption("🧠 sochu.ai")
+temperature = st.sidebar.slider("Temperature", 0.0, 1.0, 0.7)
+max_tokens = st.sidebar.slider("Max Tokens", 50, 600, 300)
 
-## Create two columns for metrics and clear button
-col1, col2, col3 = st.columns([2, 2, 1])
-with col1:
-    st.metric(label="GPU-Temp", value="~32 °C", delta="2 °C")
-with col2:
-    st.metric(label="Messages", value=len(st.session_state.messages))
-with col3:
-    if st.button("🗑️ Clear Chat", use_container_width=True):
-        st.session_state.messages = []
+# -------------------------------------------------------
+# SESSION STATE (to store answers)
+# -------------------------------------------------------
+
+if "step" not in st.session_state:
+    st.session_state.step = 1
+if "answers" not in st.session_state:
+    st.session_state.answers = {}
+
+# -------------------------------------------------------
+# SEL QUESTIONS (fixed)
+# -------------------------------------------------------
+
+sel_questions = {
+    1: "Think about a recent moment when you felt strong emotions (anger, sadness, excitement). What did you do to handle that emotion?",
+    2: "Imagine your friend is upset because someone was rude to them. What would you do in that situation?",
+    3: "If you made a mistake that affected someone else, how would you handle it?",
+    4: "When you feel stressed or overwhelmed, what are some ways you calm yourself down?",
+    5: "If you have to make a difficult decision that affects you and your friends, how would you choose what to do?"
+}
+
+# -------------------------------------------------------
+# RENDER QUESTIONS ONE BY ONE
+# -------------------------------------------------------
+
+step = st.session_state.step
+
+if step <= 5:
+    st.subheader(f"Question {step}")
+    st.write(sel_questions[step])
+    
+    user_input = st.text_input("Your answer:", key=f"answer_{step}")
+
+    if st.button("Submit Answer"):
+        if user_input.strip() == "":
+            st.warning("Please enter an answer.")
+        else:
+            st.session_state.answers[step] = user_input
+            st.session_state.step += 1
+            st.rerun()
+
+# -------------------------------------------------------
+# WHEN ALL 5 QUESTIONS ARE ANSWERED → GET SEL SCORE
+# -------------------------------------------------------
+
+elif step == 6:
+    st.success("All questions answered! Calculating your SEL score...")
+
+    combined_input = ""
+    for i in range(1, 6):
+        combined_input += f"Answer {i}: {st.session_state.answers[i]}\n"
+
+    result = generate_response_new(
+        question=(
+            f"These are the user's 5 SEL answers. "
+            f"Please analyze and give SEL scores.\n\n{combined_input}"
+        ),
+        temperature=temperature,
+        max_tokens=max_tokens
+    )
+
+    st.subheader("Your SEL Results:")
+    st.write(result)
+
+    if st.button("Retake Test"):
+        st.session_state.step = 1
+        st.session_state.answers = {}
         st.rerun()
-
-## Sidebar for settings
-st.sidebar.title("Settings")
-temperature = st.sidebar.slider("Temperature", min_value=0.0, max_value=1.0, value=0.7, step=0.1)
-max_tokens = st.sidebar.slider("Max Tokens", min_value=50, max_value=600, value=300, step=50)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### About")
-st.sidebar.info(
-    "This chatbot uses LLaMA 3.1 via Groq to provide guidance on SEL. ~Sochu "
-    
-)
-
-## Display chat history
-chat_container = st.container()
-with chat_container:
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-## Chat input
-if prompt_input := st.chat_input("Ask me anything about psychology or social emotional learning..."):
-    # Add user message to chat history
-    st.session_state.messages.append({"role": "user", "content": prompt_input})
-    
-    # Display user message
-    with st.chat_message("user"):
-        st.markdown(prompt_input)
-    
-    # Generate and display assistant response
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            response = generate_response_with_history(
-                prompt_input,
-                st.session_state.messages[:-1],  # Exclude the current message
-                temperature,
-                max_tokens
-            )
-            st.markdown(response)
-    
-    # Add assistant response to chat history
-    st.session_state.messages.append({"role": "assistant", "content": response})
-    
-    # Rerun to update the display
-    st.rerun()
-
-## Initial message if no chat history
-if len(st.session_state.messages) == 0:
-    st.info("👋 Welcome! I'm here to help you with psychology and social emotional learning. Ask me anything!")
