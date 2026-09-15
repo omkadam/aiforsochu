@@ -1,4 +1,5 @@
 langchain
+confident-trace
 python-dotenv
 ipykernel
 langchain-community

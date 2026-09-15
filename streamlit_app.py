@@ -1,12 +1,16 @@
+import os
+
 import streamlit as st
 import openai
+from confident_trace import init, span
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
 
-import os
 from dotenv import load_dotenv
 load_dotenv()
+confident_api_key = os.getenv("CONFIDENT_API_KEY")
+init()
 
 ## Langsmith tracking
 os.environ['LANGCHAIN_API_KEY'] = os.getenv("LANGCHAIN_API_KEY")
@@ -61,7 +65,8 @@ def generate_response_new(question, temperature, max_tokens):
     )
     output_parser = StrOutputParser()
     chain = prompt | llm | output_parser
-    answer = chain.invoke({'question': question})
+    with span("sel_score_generation"):
+        answer = chain.invoke({'question': question})
     return answer
 
 # -------------------------------------------------------
